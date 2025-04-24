@@ -19,6 +19,7 @@ Thumbs.db
 *.tmp
 *.swp
 *.bak
+*.db
 
 # Ignore data folder
 data/
