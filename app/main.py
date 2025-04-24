@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     - Gracefully closes the Redis connection on shutdown.
     """
     # Setup Redis
-    redis = aioredis.from_url("redis://localhost:6379")
+    redis = aioredis.from_url("redis://redis:6379")
 
     # DB initialize tables
     db_handler.initialize_tables()
@@ -57,6 +57,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Custom Equal-Weighted Index API", lifespan=lifespan)
+
+
+@app.get("/")
+async def homepage():
+    """
+    A home page route
+    """
+    return {"message": "Welcome to Hedgineer API"}
 
 
 @app.post("/build-index")

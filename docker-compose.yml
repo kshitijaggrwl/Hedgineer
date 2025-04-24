@@ -10,14 +10,22 @@ services:
     depends_on:
       - redis
     environment:
-      - REDIS_HOST=redis
+      - REDIS_HOST=redis  # This should match the redis service name
       - DB_PATH=/app/data/index_data.duckdb
+    networks:
+      - app-network
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
     restart: always
-  
+    networks:
+      - app-network
+
 volumes:
   duckdb_data:
+
+networks:
+  app-network:
+    driver: bridge
