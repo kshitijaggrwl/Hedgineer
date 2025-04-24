@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pandas
+polars
+yfinance
+duckdb
+redis
+openpyxl
+python-dotenv

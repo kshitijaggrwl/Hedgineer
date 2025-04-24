@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+      - DB_PATH=/app/data/index_data.duckdb
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    restart: always
+  
+volumes:
+  duckdb_data:
