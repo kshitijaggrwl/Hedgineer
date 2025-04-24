@@ -1,20 +1,68 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
+from fastapi_cache.backends.redis import RedisBackend
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi_cache import FastAPICache
 from fastapi_cache.decorator import cache
 from datetime import date
 import pandas as pd
-from typing import Optional
-from app.utils import get_top_100_stocks_on_date, compute_index_performance
-from app.db_handler import db_handler
-from app.cache import lifespan
+from typing import Optional, List
 import json
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from redis import asyncio as aioredis
+from openpyxl import Workbook
+import tempfile
+
+from app.utils import get_top_100_stocks_on_date
+from app.db_handler import db_handler
+from app.logger import Logger
+from app.utils import (
+    fetch_index_performance,
+    fetch_index_composition,
+    fetch_composition_changes,
+)
+from app.exceptions import DataNotFoundError
+
+log_base_path = os.path.join(os.getcwd(), "logs")
+Logger.setup_logger(log_base_path)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """
+    Lifespan context manager for FastAPI.
+
+    This function handles application startup and shutdown tasks:
+    - Initializes a Redis connection and attaches it to `app.state`.
+    - Sets up the database handler and ensures required tables exist.
+    - Initializes Redis-based caching using FastAPI Cache.
+    - Cleans any existing cache on startup (optional but useful during development).
+    - Gracefully closes the Redis connection on shutdown.
+    """
+    # Setup Redis
+    redis = aioredis.from_url("redis://localhost:6379")
+
+    # DB initialize tables
+    db_handler.initialize_tables()
+
+    # Setup cache
+    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
+    await FastAPICache.clear()
+
+    yield
+
+    # Teardown
+    await redis.close()
+
 
 app = FastAPI(title="Custom Equal-Weighted Index API", lifespan=lifespan)
 
 
 @app.post("/build-index")
-async def build_index(start_date: date = Query(...), end_date: Optional[date] = Query(None)):
+async def build_index(
+    start_date: date = Query(...), end_date: Optional[date] = Query(None)
+):
     end_date = end_date or start_date
     date_range = pd.date_range(start=start_date, end=end_date)
     compositions = []
@@ -28,175 +76,233 @@ async def build_index(start_date: date = Query(...), end_date: Optional[date] = 
         if top_stocks.empty:
             continue
 
-        top_stocks['weight'] = 1 / 100
-        top_stocks['date'] = day_str
-        top_stocks['notional'] = top_stocks['weight'] * top_stocks['close']
-        index_value = top_stocks['notional'].sum()
+        top_stocks["weight"] = 1 / 100
+        top_stocks["date"] = day_str
+        top_stocks["notional"] = top_stocks["weight"] * top_stocks["close"]
+        index_value = top_stocks["notional"].sum()
 
         # Calculate daily_return only
         if previous_index_value is None:
             daily_return = 0.0
         else:
-            daily_return = ((index_value - previous_index_value) / previous_index_value) * 100 if previous_index_value != 0 else 0.0
+            daily_return = (
+                ((index_value - previous_index_value) / previous_index_value) * 100
+                if previous_index_value != 0
+                else 0.0
+            )
         previous_index_value = index_value
 
-        performances.append({
-            'date': day_str,
-            'index_value': index_value,
-            'daily_return': daily_return
-        })
+        performances.append(
+            {"date": day_str, "index_value": index_value, "daily_return": daily_return}
+        )
 
         # Cache each day's performance in Redis
         redis_backend = FastAPICache.get_backend()
         perf_key = f"build-index:performance:{day_str}"
         await redis_backend.redis.set(
-            perf_key, 
-            json.dumps({
-                'index_value': index_value, 
-                'daily_return': daily_return
-            }), 
-            ex=86400
+            perf_key,
+            json.dumps({"index_value": index_value, "daily_return": daily_return}),
+            ex=86400,
         )
 
-        compositions.append(top_stocks[['date', 'ticker', 'weight']])
+        compositions.append(top_stocks[["date", "ticker", "weight"]])
 
     if not compositions:
-        return JSONResponse(status_code=404, content={"message": "No index data could be built."})
+        return JSONResponse(
+            status_code=404, content={"message": "No index data could be built."}
+        )
 
     composition_df = pd.concat(compositions)
-    db_handler.execute("CREATE TABLE IF NOT EXISTS index_composition (date DATE, ticker TEXT, weight DOUBLE)")
-    db_handler.execute("DELETE FROM index_composition WHERE date BETWEEN ? AND ?", (start_date, end_date))
+    db_handler.execute(
+        "DELETE FROM index_composition WHERE date BETWEEN ? AND ?",
+        (start_date, end_date),
+    )
     db_handler.con.register("tmp_comp", composition_df)
     db_handler.execute("INSERT INTO index_composition SELECT * FROM tmp_comp")
 
     performance_df = pd.DataFrame(performances).sort_values("date")
-    db_handler.execute("""
-        CREATE TABLE IF NOT EXISTS index_performance (
-            date DATE,
-            index_value DOUBLE,
-            daily_return DOUBLE
-        )
-    """)
-    db_handler.execute("DELETE FROM index_performance WHERE date BETWEEN ? AND ?", (start_date, end_date))
+    db_handler.execute(
+        "DELETE FROM index_performance WHERE date BETWEEN ? AND ?",
+        (start_date, end_date),
+    )
     db_handler.con.register("tmp_perf", performance_df)
     db_handler.execute("INSERT INTO index_performance SELECT * FROM tmp_perf")
 
     return {
         "message": "Index built and performance calculated.",
-        "days_processed": len(performance_df)
+        "days_processed": len(performance_df),
     }
+
 
 @app.get("/index-performance")
 @cache(expire=60)
-async def index_performance(start_date: date = Query(...), end_date: date = Query(...)):
-    redis_backend = FastAPICache.get_backend()
-    date_range = pd.date_range(start=start_date, end=end_date)
-    results = []
-    all_cached = True
+async def index_performance(
+    start_date: date = Query(
+        ..., description="Start date of the index performance period."
+    ),
+    end_date: date = Query(
+        ..., description="End date of the index performance period."
+    ),
+):
+    """
+    Retrieves the index performance (index value, daily return, cumulative return) for the specified date range.
+    The function checks Redis cache first, falling back to the database if the data is not cached.
 
-    for d in date_range:
-        key = f"build-index:performance:{d.date()}"
-        cached = await redis_backend.redis.get(key)
+    Args:
+        start_date (date): The start date of the performance period.
+        end_date (date): The end date of the performance period.
 
-        if cached:
-            data = json.loads(cached)
-            results.append({
-                "date": str(d.date()),
-                "index_value": data.get("index_value"),
-                "daily_return": data.get("daily_return", 0.0)
-            })
-        else:
-            all_cached = False
-            break
+    Returns:
+        JSONResponse: A list of dictionaries with index performance data
+    """
+    Logger.request.info(f"Fetching index performance for {start_date} to {end_date}")
+    try:
+        redis_backend = FastAPICache.get_backend()
+        date_range = pd.date_range(start=start_date, end=end_date)
+        results = []
+        all_cached = True
 
-    if not all_cached:
-        query = """
-        SELECT date, index_value, daily_return
-        FROM index_performance
-        WHERE date BETWEEN ? AND ?
-        ORDER BY date
-        """
-        df = db_handler.fetchdf(query, (start_date, end_date))
-        if df.empty:
-            return JSONResponse(status_code=404, content={"message": "No index performance data available."})
-        df = df.replace([float('inf'), float('-inf')], None).fillna(0)
-        results = df.to_dict(orient="records")
+        for d in date_range:
+            key = f"build-index:performance:{d.date()}"
+            cached = await redis_backend.redis.get(key)
 
-    df_results = pd.DataFrame(results).sort_values("date")
-    df_results['cumulative_return'] = df_results['daily_return'].cumsum()
-    return df_results.to_dict(orient="records")
+            if cached:
+                data = json.loads(cached)
+                results.append(
+                    {
+                        "date": str(d.date()),
+                        "index_value": data.get("index_value"),
+                        "daily_return": data.get("daily_return", 0.0),
+                    }
+                )
+            else:
+                all_cached = False
+                Logger.signal.info(f"Cache miss for date {d.date()}")
+                break
+
+        if not all_cached:
+            results = fetch_index_performance(start_date, end_date)
+
+        df_results = pd.DataFrame(results).sort_values("date")
+        df_results["cumulative_return"] = df_results["daily_return"].cumsum()
+
+        Logger.response.info(
+            f"Index performance returned for {start_date} to {end_date}"
+        )
+        return df_results.to_dict(orient="records")
+
+    except DataNotFoundError as e:
+        return JSONResponse(status_code=404, content={"message": str(e)})
+
+    except Exception as e:
+        Logger.response.error(f"Unexpected error: {str(e)}")
+        return JSONResponse(
+            status_code=500, content={"message": "Internal server error"}
+        )
+
 
 @app.get("/index-composition")
 @cache(expire=60)
 async def index_composition(date: date = Query(...)):
-    redis = FastAPICache.get_backend().redis
-    key = f"build-index:composition:{date}"
+    """
+    Retrieves the index composition for a specific date. Checks Redis cache first;
+    if data is not found, falls back to the DuckDB database.
 
-    cached = await redis.get(key)
-    if cached:
-        tickers = json.loads(cached)
-        return [{"ticker": t["ticker"], "weight": t["weight"]} for t in tickers]
+    Args:
+        request (Request): FastAPI request object to access app state.
+        date (date): The date for which index composition is requested.
 
-    # Fallback to DuckDB
-    query = "SELECT ticker, weight FROM index_composition WHERE date = ?"
-    rows = db_handler.fetchall(query, (date,))
-    if not rows:
-        return JSONResponse(status_code=404, content={"message": "No composition data found for this date."})
+    Returns:
+        JSONResponse or list[dict]: Composition data or appropriate error message.
+    """
+    Logger.request.info(f"Fetching index composition for {date}")
+    try:
+        redis = FastAPICache.get_backend().redis
+        key = f"build-index:composition:{date}"
 
-    return [{"ticker": r[0], "weight": r[1]} for r in rows]
+        cached = await redis.get(key)
+        if cached:
+            tickers = json.loads(cached)
+            return [{"ticker": t["ticker"], "weight": t["weight"]} for t in tickers]
+
+        # Fallback to DB
+        return fetch_index_composition(date)
+
+    except DataNotFoundError as e:
+        Logger.response.warning(str(e))
+        return JSONResponse(status_code=404, content={"message": str(e)})
+
+    except Exception as e:
+        Logger.response.error(
+            f"Unexpected error in /index-composition: {e}", exc_info=True
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "message": "An unexpected error occurred while fetching index composition."
+            },
+        )
+
 
 @app.get("/composition-changes")
 @cache(expire=60)
-async def composition_changes(start_date: date = Query(...), end_date: date = Query(...)):
-    query = """
-    SELECT date, ticker FROM index_composition
-    WHERE date BETWEEN ? AND ?
-    ORDER BY date
+async def composition_changes(
+    start_date: date = Query(...), end_date: date = Query(...)
+):
     """
-    rows = db_handler.fetchall(query, (start_date, end_date))
+    API endpoint to return composition changes (entered/exited tickers) over a date range.
 
-    if not rows:
+    Args:
+        request (Request): FastAPI request object.
+        start_date (date): Start date of the range.
+        end_date (date): End date of the range.
+
+    Returns:
+        JSONResponse: List of changes or error message.
+    """
+    Logger.request.info(f"Fetching composition changes for {start_date} to {end_date}")
+    try:
+        changes = fetch_composition_changes(start_date, end_date)
+
+        if not changes:
+            Logger.response.info(
+                f"No composition changes detected between {start_date} and {end_date}."
+            )
+            return JSONResponse(
+                status_code=200, content={"message": "No composition changes detected."}
+            )
+
+        return {"changes": changes}
+
+    except DataNotFoundError as e:
+        Logger.response.warning(str(e))
+        return JSONResponse(status_code=404, content={"message": str(e)})
+
+    except Exception as e:
+        Logger.response.error(
+            f"Unexpected error in /composition-changes: {e}", exc_info=True
+        )
         return JSONResponse(
-            status_code=404,
-            content={"message": "No composition data found for this date range."}
+            status_code=500,
+            content={
+                "message": "An unexpected error occurred while processing composition changes."
+            },
         )
 
-    df = pd.DataFrame(rows, columns=["date", "ticker"])
-    df['date'] = pd.to_datetime(df['date'])
-
-    # Group by date into {date: set(tickers)}
-    grouped = df.groupby('date')['ticker'].apply(set).sort_index()
-    changes = []
-
-    previous_date = None
-    previous_tickers = set()
-
-    for current_date, current_tickers in grouped.items():
-        if previous_date is not None:
-            entered = list(current_tickers - previous_tickers)
-            exited = list(previous_tickers - current_tickers)
-            if entered or exited:
-                changes.append({
-                    "date": current_date.date(),
-                    "entered": sorted(entered),
-                    "exited": sorted(exited)
-                })
-        previous_date = current_date
-        previous_tickers = current_tickers
-
-    if not changes:
-        return JSONResponse(
-            status_code=200,
-            content={"message": "No composition changes detected."}
-        )
-
-    return {"changes": changes}
 
 @app.post("/export-data")
 async def export_data(start_date: date = Query(...), end_date: date = Query(...)):
-    from openpyxl import Workbook
-    import io
-    import tempfile
+    """
+    Exports index performance, composition, and changes between a date range as an Excel file.
+
+    Args:
+        start_date (date): Start of export range.
+        end_date (date): End of export range.
+
+    Returns:
+        FileResponse: Excel file containing exported data.
+    """
+
     def safe_excel_date(d):
         if isinstance(d, pd.Timestamp):
             return d.date()
@@ -204,83 +310,68 @@ async def export_data(start_date: date = Query(...), end_date: date = Query(...)
             return d[0].date()
         return d
 
-    # Fetch index performance directly from DB
-    performance_query = """
-    SELECT date, index_value, daily_return FROM index_performance
-    WHERE date BETWEEN ? AND ? ORDER BY date
-    """
-    df_performance = db_handler.fetchdf(performance_query, (start_date, end_date))
+    try:
+        performance_list = fetch_index_performance(start_date, end_date)
+        df_performance = pd.DataFrame(performance_list).sort_values("date")
+        df_performance["cumulative_return"] = df_performance["daily_return"].cumsum()
 
-    if df_performance.empty:
-        return JSONResponse(status_code=404, content={"message": "No performance data found."})
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Index Performance"
+        ws.append(["Date", "Index Value", "Daily Return", "Cumulative Return"])
 
-    # Calculate cumulative return only for the response
-    df_performance['cumulative_return'] = df_performance['daily_return'].cumsum()
+        for row in df_performance.itertuples():
+            ws.append(
+                [
+                    safe_excel_date(row.date),
+                    row.index_value,
+                    row.daily_return,
+                    row.cumulative_return,
+                ]
+            )
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Index Performance"
-    ws.append(["Date", "Index Value", "Daily Return", "Cumulative Return"])
+        # Index composition
+        composition_query = "SELECT date, ticker, weight FROM index_composition WHERE date BETWEEN ? AND ?"
+        composition_df = db_handler.fetchdf(composition_query, (start_date, end_date))
+        if not composition_df.empty:
+            ws_composition = wb.create_sheet(title="Index Composition")
+            ws_composition.append(["Date", "Ticker", "Weight"])
+            for row in composition_df.itertuples():
+                ws_composition.append(
+                    [safe_excel_date(row.date), row.ticker, row.weight]
+                )
 
-    for row in df_performance.itertuples():
-        ws.append([
-            safe_excel_date(row.date),
-            row.index_value,
-            row.daily_return,
-            row.cumulative_return
-        ])
-
-    # Index composition
-    composition_query = "SELECT date, ticker, weight FROM index_composition WHERE date BETWEEN ? AND ?"
-    composition_df = db_handler.fetchdf(composition_query, (start_date, end_date))
-
-    if not composition_df.empty:
-        ws_composition = wb.create_sheet(title="Index Composition")
-        ws_composition.append(["Date", "Ticker", "Weight"])
-        for row in composition_df.itertuples():
-            ws_composition.append([
-                safe_excel_date(row.date),
-                row.ticker,
-                row.weight
-            ])
-
-    # Composition changes (based on day-over-day comparison)
-    change_query = "SELECT date, ticker FROM index_composition WHERE date BETWEEN ? AND ? ORDER BY date"
-    changes_df = db_handler.fetchdf(change_query, (start_date, end_date))
-    if not changes_df.empty:
-        changes_df['date'] = pd.to_datetime(changes_df['date'])
-        grouped = changes_df.groupby('date')['ticker'].apply(set).sort_index()
-
-        previous_tickers = set()
-        changes = []
-
-        for current_date, current_tickers in grouped.items():
-            entered = sorted(current_tickers - previous_tickers)
-            exited = sorted(previous_tickers - current_tickers)
-            if entered or exited:
-                changes.append({
-                    "date": current_date.date(),
-                    "entered": entered,
-                    "exited": exited
-                })
-            previous_tickers = current_tickers
-
+        # Composition changes
+        changes = fetch_composition_changes(start_date, end_date)
         if changes:
             ws_changes = wb.create_sheet(title="Composition Changes")
             ws_changes.append(["Date", "Entered Tickers", "Exited Tickers"])
             for change in changes:
-                ws_changes.append([
-                    change['date'],
-                    ', '.join(change['entered']),
-                    ', '.join(change['exited'])
-                ])
+                ws_changes.append(
+                    [
+                        change["date"],
+                        ", ".join(change["entered"]),
+                        ", ".join(change["exited"]),
+                    ]
+                )
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        wb.save(tmp.name)
-        tmp_path = tmp.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            tmp_path = tmp.name
 
-    return FileResponse(
-        tmp_path,
-        filename="index_data.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        return FileResponse(
+            tmp_path,
+            filename="index_data.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    except DataNotFoundError as e:
+        Logger.response.warning(str(e))
+        return JSONResponse(status_code=404, content={"message": str(e)})
+
+    except Exception as e:
+        Logger.response.error(f"Unexpected error in /export-data: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"message": "An unexpected error occurred while exporting data."},
+        )

@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 from db import get_db_connection, create_daily_stock_data_table, insert_stock_data
 
+
 def fetch_and_store_stock_data(ticker, start_date, end_date):
     print(f"📡 Fetching data for {ticker}...")
 
@@ -21,8 +22,8 @@ def fetch_and_store_stock_data(ticker, start_date, end_date):
         return None
 
     # Add market cap to the historical data
-    hist['market_cap'] = market_cap
-    hist['ticker'] = ticker
+    hist["market_cap"] = market_cap
+    hist["ticker"] = ticker
 
     # Save to DuckDB
     con = get_db_connection()
@@ -31,18 +32,22 @@ def fetch_and_store_stock_data(ticker, start_date, end_date):
 
     print(f"✅ Data for {ticker} saved to DuckDB.")
 
+
 def fetch_top_100_stocks(start_date, end_date):
     # Load tickers from DuckDB
     con = get_db_connection()
-    tickers_df = con.execute("SELECT ticker FROM stock_metadata WHERE active = TRUE").fetchdf()
-    tickers = tickers_df['ticker'].tolist()
+    tickers_df = con.execute(
+        "SELECT ticker FROM stock_metadata WHERE active = TRUE"
+    ).fetchdf()
+    tickers = tickers_df["ticker"].tolist()
 
     for ticker in tickers:
         fetch_and_store_stock_data(ticker, start_date, end_date)
 
     print("🎉 Data acquisition complete.")
 
+
 if __name__ == "__main__":
-    start_date = "2025s-03-15"
-    end_date = "2025-04-20"
+    start_date = "2025-01-01"
+    end_date = "2025-04-23"
     fetch_top_100_stocks(start_date, end_date)

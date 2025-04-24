@@ -1,6 +1,6 @@
 import os
 import duckdb
-from functools import lru_cache
+
 
 class DBHandler:
     def __init__(self):
@@ -20,5 +20,25 @@ class DBHandler:
     def execute(self, query: str, params: tuple = ()):
         return self.con.execute(query, params)
 
-# Singleton instance
+    def initialize_tables(self):
+        self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS index_composition (
+                date DATE,
+                ticker TEXT,
+                weight DOUBLE
+            )
+        """
+        )
+        self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS index_performance (
+                date DATE,
+                index_value DOUBLE,
+                daily_return DOUBLE
+            )
+        """
+        )
+
+
 db_handler = DBHandler()

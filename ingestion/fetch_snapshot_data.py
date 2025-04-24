@@ -7,6 +7,7 @@ API_KEY = "e2cVzuJd_0zCqIDoCrIoklYYq6oxG8f5"
 DB_PATH = "data/index_data.duckdb"
 con = duckdb.connect(DB_PATH)
 
+
 def fetch_bulk_snapshot():
     url = "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers"
     params = {"apiKey": API_KEY}
@@ -29,7 +30,8 @@ def fetch_bulk_snapshot():
     df = pd.DataFrame(records, columns=["ticker", "close_price", "market_cap"])
     df["date"] = pd.to_datetime("today").date()
 
-    con.execute("""
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS daily_stock_data (
             ticker TEXT,
             date DATE,
@@ -37,13 +39,15 @@ def fetch_bulk_snapshot():
             market_cap DOUBLE,
             PRIMARY KEY (ticker, date)
         )
-    """)
+    """
+    )
     con.execute("INSERT OR REPLACE INTO daily_stock_data SELECT * FROM df")
 
     top_100 = df.sort_values("market_cap", ascending=False).head(100)
     print("🏆 Top 5 by Market Cap:")
     print(top_100.head(5))
     return top_100
+
 
 if __name__ == "__main__":
     fetch_bulk_snapshot()
