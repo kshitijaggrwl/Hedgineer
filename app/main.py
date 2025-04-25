@@ -21,6 +21,7 @@ from app.utils import (
     fetch_index_performance,
     fetch_index_composition,
     fetch_composition_changes,
+    save_composition_performance_data_to_db,
 )
 from app.exceptions import DataNotFoundError
 
@@ -78,7 +79,7 @@ async def build_index(
 
     Args:
         start_date (date): The starting date for the index building process.
-        end (date): The ending date for the index building process. Defaults to start_date if not provided.
+        end_date (date): The ending date for the index building process. Defaults to start_date if not provided.
 
     Returns a message indicating the success of the operation and the number of days processed.
     """
@@ -137,28 +138,19 @@ async def build_index(
                 status_code=404, content={"message": "No index data could be built."}
             )
 
-        composition_df = pd.concat(compositions)
-        db_handler.execute(
-            "DELETE FROM index_composition WHERE date BETWEEN ? AND ?",
-            (start_date, end_date),
+        save_composition_performance_data_to_db(
+            compositions=compositions,
+            performances=performances,
+            start_date=start_date,
+            end_date=end_date,
         )
-        db_handler.con.register("tmp_comp", composition_df)
-        db_handler.execute("INSERT INTO index_composition SELECT * FROM tmp_comp")
-
-        performance_df = pd.DataFrame(performances).sort_values("date")
-        db_handler.execute(
-            "DELETE FROM index_performance WHERE date BETWEEN ? AND ?",
-            (start_date, end_date),
-        )
-        db_handler.con.register("tmp_perf", performance_df)
-        db_handler.execute("INSERT INTO index_performance SELECT * FROM tmp_perf")
 
         Logger.response.info(
             f"Index build and performace calculated for {start_date} to {end_date}"
         )
         return {
             "message": "Index built and performance calculated.",
-            "days_processed": len(performance_df),
+            "days_processed": len(performances),
         }
     except Exception as e:
         Logger.response.error(f"Unexpected error: {str(e)}")

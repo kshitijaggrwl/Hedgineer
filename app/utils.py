@@ -129,3 +129,37 @@ def fetch_composition_changes(start_date: date, end_date: date) -> List[Dict]:
         previous_tickers = current_tickers
 
     return changes
+
+
+def save_composition_performance_data_to_db(
+    compositions: list[pd.DataFrame],
+    performances: list[dict],
+    start_date: date,
+    end_date: date,
+) -> None:
+    """
+    Store results in DuckDB database.
+
+    Args:
+        compositions: List of composition DataFrames
+        performances: List of performance dictionaries
+        start_date: Start date of the processing range
+        end_date: End date of the processing range
+    """
+    # Store compositions
+    composition_df = pd.concat(compositions)
+    db_handler.execute(
+        "DELETE FROM index_composition WHERE date BETWEEN ? AND ?",
+        (start_date, end_date),
+    )
+    db_handler.con.register("tmp_comp", composition_df)
+    db_handler.execute("INSERT INTO index_composition SELECT * FROM tmp_comp")
+
+    # Store performances
+    performance_df = pd.DataFrame(performances).sort_values("date")
+    db_handler.execute(
+        "DELETE FROM index_performance WHERE date BETWEEN ? AND ?",
+        (start_date, end_date),
+    )
+    db_handler.con.register("tmp_perf", performance_df)
+    db_handler.execute("INSERT INTO index_performance SELECT * FROM tmp_perf")
