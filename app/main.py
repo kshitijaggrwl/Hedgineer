@@ -70,6 +70,18 @@ async def homepage():
 async def build_index(
     start_date: date = Query(...), end_date: Optional[date] = Query(None)
 ):
+    """
+    Build the index and calculate performance metrics over a specified date range.
+
+    This endpoint processes index composition and performance data between the provided start and end dates.
+    It stores the results in both Redis (for caching) and DuckDB (for persistent storage).
+
+    Args:
+        start_date (date): The starting date for the index building process.
+        end (date): The ending date for the index building process. Defaults to start_date if not provided.
+
+    Returns a message indicating the success of the operation and the number of days processed.
+    """
     end_date = end_date or start_date
     date_range = pd.date_range(start=start_date, end=end_date)
     compositions = []
