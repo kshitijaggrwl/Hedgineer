@@ -2,12 +2,6 @@
 
 A FastAPI application for financial index analysis with Redis caching and DuckDB storage.
 
-## Table of Contents
-- [Features](#-features)
-- [Installation Guide](#-quick-start)
-- [Database Schema](#-database-schema)
-- [Production Deployment](#-production-deployment)
-
 ## ✨ Features
 - **Real-time index calculation**
 - **Redis caching layer** for performance
