@@ -37,13 +37,13 @@ docker-compose up -d --build
 - Access: http://localhost:8000/docs
 
 
-# Data Acquisition
+## Data Acquisition
 ```bash
 python ingestion/fetch_tickers.py
 python ingestion/fetch_stock_data.py
 ```
 
-# Database Schema
+## Database Schema
 
 ### Tables
 - `daily_stock_data`
@@ -86,7 +86,7 @@ python ingestion/fetch_stock_data.py
 | weight  | DOUBLE  | YES      | Index weight     |
 
 
-# Production and Scaling Improvements
+## Production and Scaling Improvements
 
 - **Use Gunicorn with Uvicorn Workers:**
  For better performance and handling multiple requests, run the application with Gunicorn and Uvicorn workers.
