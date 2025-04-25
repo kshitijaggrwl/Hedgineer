@@ -34,9 +34,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Lifespan context manager for FastAPI.
 
     This function handles application startup and shutdown tasks:
-    - Initializes a Redis connection and attaches it to `app.state`.
-    - Sets up the database handler and ensures required tables exist.
     - Initializes Redis-based caching using FastAPI Cache.
+    - Sets up the database handler and ensures required tables exist.
     - Cleans any existing cache on startup (optional but useful during development).
     - Gracefully closes the Redis connection on shutdown.
     """
