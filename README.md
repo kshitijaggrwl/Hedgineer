@@ -98,17 +98,16 @@ python ingestion/fetch_stock_data.py
     ```bash
     gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app
     ```
-
-- **Set Up Monitoring and Alerts**
- Setup alerts for failure cases,(application level, server level)
-
-- **Container Orchestration:**
- Use Docker Swarm or Kubernetes for managing containers in production environments.
-
 - **Scale App Tier and Data Tier Independently:**
 For App Tier, we can use NGINX as forward proxy. This will balance load among multiple Application Servers
 For DataBase Tier, we have more read requests, we can use single master and multiple slaves architecture.
 
 - **Security**
 Access API through a key. Add rate limiting on key level to prevent DDOS attacks
+
+- **Set Up Monitoring and Alerts**
+ Setup alerts for failure cases,(application level, server level)
+
+- **Container Orchestration:**
+ Use Docker Swarm or Kubernetes for managing containers in production environments.
 
