@@ -8,6 +8,15 @@ from app.exceptions import DataNotFoundError
 
 
 def get_top_100_stocks_on_date(d: date) -> pd.DataFrame:
+    """Retrieve the top 100 stocks by market capitalization for a given date.
+
+    Args:
+        d (date): The date for which to fetch stock data.
+
+    Returns:
+        pd.DataFrame: DataFrame containing ticker, close price, and market cap
+        of the top 100 stocks, sorted by market cap in descending order.
+    """
     query = """
     SELECT ticker, close, market_cap
     FROM daily_stock_data

@@ -9,11 +9,21 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 # Create DuckDB connection
 def get_db_connection():
+    """Create and return a DuckDB connection to the database specified by DB_PATH.
+
+    Returns:
+        duckdb.DuckDBPyConnection: An active connection to the DuckDB database.
+    """
     return duckdb.connect(DB_PATH)
 
 
 # Create table if not exists
 def create_stock_metadata_table(con):
+    """Create the stock_metadata table if it doesn't exist.
+
+    Args:
+        con (duckdb.DuckDBPyConnection): Active database connection.
+    """
     con.execute(
         """
     CREATE TABLE IF NOT EXISTS stock_metadata (
@@ -30,6 +40,11 @@ def create_stock_metadata_table(con):
 
 
 def create_daily_stock_data_table(con):
+    """Create the daily_stock_data table if it doesn't exist.
+
+    Args:
+        con (duckdb.DuckDBPyConnection): Active database connection.
+    """
     con.execute(
         """
     CREATE TABLE IF NOT EXISTS daily_stock_data (
@@ -49,6 +64,12 @@ def create_daily_stock_data_table(con):
 
 # Insert tickers into the stock_metadata table
 def insert_tickers_into_db(con, tickers):
+    """Insert or replace ticker metadata into the stock_metadata table.
+
+    Args:
+        con (duckdb.DuckDBPyConnection): Active database connection.
+        tickers (list[dict]): List of dictionaries containing ticker metadata.
+    """
     for t in tickers:
         con.execute(
             """
@@ -69,6 +90,14 @@ def insert_tickers_into_db(con, tickers):
 
 # Insert daily stock data
 def insert_stock_data(con, stock_data):
+    """Insert or replace daily stock data into the daily_stock_data table.
+
+    Args:
+        con (duckdb.DuckDBPyConnection): Active database connection.
+        stock_data (pd.DataFrame): DataFrame containing daily stock data with columns:
+            ['ticker', 'Open', 'High', 'Low', 'Close', 'Volume', 'market_cap'].
+            The index should be a datetime.
+    """
     for _, row in stock_data.iterrows():
         con.execute(
             """

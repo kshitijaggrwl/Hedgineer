@@ -8,6 +8,22 @@ API_KEY = "e2cVzuJd_0zCqIDoCrIoklYYq6oxG8f5"  # Replace with your API key
 
 
 def fetch_tickers():
+    """Fetch all active US common stock tickers from Polygon API and store in database.
+
+    This function:
+    1. Makes paginated requests to Polygon's /v3/reference/tickers endpoint
+    2. Handles rate limiting with 15-second delays between requests
+    3. Filters for active US common stocks (type='CS')
+    4. Stores results in the stock_metadata table
+
+    Notes:
+        - Requires POLYGON_API_KEY environment variable
+        - Implements automatic pagination using cursor tokens
+        - Skips failed requests and continues with available data
+
+    Returns:
+        None: Data is stored directly in database. Prints status updates.
+    """
     tickers = []
     cursor = None
     params = {

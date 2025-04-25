@@ -38,6 +38,11 @@ docker-compose up -d --build
 
 
 ## Data Acquisition
+Data is collected from two APIs. Polygon and Yahoo Finance.  
+We collect the list of tickers registered on US exchange from Polygon. Daily Data for all tickers is collected from Yahoon Finance.  
+
+Limitation with polygon API, We can make max 5 calls per secon with commercial key. Also snapshot api is not available on commercial key.  
+Limitation with yahoo Finance, We can't get the list of all tickers from Yahoo Finance. 
 ```bash
 python ingestion/fetch_tickers.py
 python ingestion/fetch_stock_data.py

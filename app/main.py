@@ -3,9 +3,9 @@ from fastapi_cache.backends.redis import RedisBackend
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi_cache import FastAPICache
 from fastapi_cache.decorator import cache
-from datetime import date
+from datetime import date, datetime
 import pandas as pd
-from typing import Optional, List
+from typing import Optional
 import json
 import os
 from collections.abc import AsyncIterator
@@ -82,75 +82,89 @@ async def build_index(
 
     Returns a message indicating the success of the operation and the number of days processed.
     """
-    end_date = end_date or start_date
-    date_range = pd.date_range(start=start_date, end=end_date)
-    compositions = []
-    performances = []
+    Logger.request.info(f"Fetching index performance for {start_date} to {end_date}")
+    try:
+        end_date = end_date or start_date
+        date_range = pd.date_range(start=start_date, end=end_date)
+        compositions = []
+        performances = []
 
-    previous_index_value = None
+        previous_index_value = None
 
-    for day in date_range:
-        day_str = day.date()
-        top_stocks = get_top_100_stocks_on_date(day_str)
-        if top_stocks.empty:
-            continue
+        for day in date_range:
+            day_str = day.date()
+            top_stocks = get_top_100_stocks_on_date(day_str)
+            if top_stocks.empty:
+                continue
 
-        top_stocks["weight"] = 1 / 100
-        top_stocks["date"] = day_str
-        top_stocks["notional"] = top_stocks["weight"] * top_stocks["close"]
-        index_value = top_stocks["notional"].sum()
+            top_stocks["weight"] = 1 / 100
+            top_stocks["date"] = day_str
+            top_stocks["notional"] = top_stocks["weight"] * top_stocks["close"]
+            index_value = top_stocks["notional"].sum()
 
-        # Calculate daily_return only
-        if previous_index_value is None:
-            daily_return = 0.0
-        else:
-            daily_return = (
-                ((index_value - previous_index_value) / previous_index_value) * 100
-                if previous_index_value != 0
-                else 0.0
+            # Calculate daily_return only
+            if previous_index_value is None:
+                daily_return = 0.0
+            else:
+                daily_return = (
+                    ((index_value - previous_index_value) / previous_index_value) * 100
+                    if previous_index_value != 0
+                    else 0.0
+                )
+            previous_index_value = index_value
+
+            performances.append(
+                {
+                    "date": day_str,
+                    "index_value": index_value,
+                    "daily_return": daily_return,
+                }
             )
-        previous_index_value = index_value
 
-        performances.append(
-            {"date": day_str, "index_value": index_value, "daily_return": daily_return}
+            # Cache each day's performance in Redis
+            redis_backend = FastAPICache.get_backend()
+            perf_key = f"build-index:performance:{day_str}"
+            await redis_backend.redis.set(
+                perf_key,
+                json.dumps({"index_value": index_value, "daily_return": daily_return}),
+                ex=86400,
+            )
+
+            compositions.append(top_stocks[["date", "ticker", "weight"]])
+
+        if not compositions:
+            return JSONResponse(
+                status_code=404, content={"message": "No index data could be built."}
+            )
+
+        composition_df = pd.concat(compositions)
+        db_handler.execute(
+            "DELETE FROM index_composition WHERE date BETWEEN ? AND ?",
+            (start_date, end_date),
         )
+        db_handler.con.register("tmp_comp", composition_df)
+        db_handler.execute("INSERT INTO index_composition SELECT * FROM tmp_comp")
 
-        # Cache each day's performance in Redis
-        redis_backend = FastAPICache.get_backend()
-        perf_key = f"build-index:performance:{day_str}"
-        await redis_backend.redis.set(
-            perf_key,
-            json.dumps({"index_value": index_value, "daily_return": daily_return}),
-            ex=86400,
+        performance_df = pd.DataFrame(performances).sort_values("date")
+        db_handler.execute(
+            "DELETE FROM index_performance WHERE date BETWEEN ? AND ?",
+            (start_date, end_date),
         )
+        db_handler.con.register("tmp_perf", performance_df)
+        db_handler.execute("INSERT INTO index_performance SELECT * FROM tmp_perf")
 
-        compositions.append(top_stocks[["date", "ticker", "weight"]])
-
-    if not compositions:
+        Logger.response.info(
+            f"Index build and performace calculated for {start_date} to {end_date}"
+        )
+        return {
+            "message": "Index built and performance calculated.",
+            "days_processed": len(performance_df),
+        }
+    except Exception as e:
+        Logger.response.error(f"Unexpected error: {str(e)}")
         return JSONResponse(
-            status_code=404, content={"message": "No index data could be built."}
+            status_code=500, content={"message": "Internal server error"}
         )
-
-    composition_df = pd.concat(compositions)
-    db_handler.execute(
-        "DELETE FROM index_composition WHERE date BETWEEN ? AND ?",
-        (start_date, end_date),
-    )
-    db_handler.con.register("tmp_comp", composition_df)
-    db_handler.execute("INSERT INTO index_composition SELECT * FROM tmp_comp")
-
-    performance_df = pd.DataFrame(performances).sort_values("date")
-    db_handler.execute(
-        "DELETE FROM index_performance WHERE date BETWEEN ? AND ?",
-        (start_date, end_date),
-    )
-    db_handler.con.register("tmp_perf", performance_df)
-    db_handler.execute("INSERT INTO index_performance SELECT * FROM tmp_perf")
-
-    return {
-        "message": "Index built and performance calculated.",
-        "days_processed": len(performance_df),
-    }
 
 
 @app.get("/index-performance")
@@ -310,7 +324,14 @@ async def composition_changes(
 
 
 @app.post("/export-data")
-async def export_data(start_date: date = Query(...), end_date: date = Query(...)):
+async def export_data(
+    start_date: Optional[date] = Query(
+        None, description="Start date for export (YYYY-MM-DD). Defaults to 2000-01-01."
+    ),
+    end_date: Optional[date] = Query(
+        None, description="End date for export (YYYY-MM-DD). Defaults to today."
+    ),
+):
     """
     Exports index performance, composition, and changes between a date range as an Excel file.
 
@@ -321,6 +342,8 @@ async def export_data(start_date: date = Query(...), end_date: date = Query(...)
     Returns:
         FileResponse: Excel file containing exported data.
     """
+    start_date = start_date or date(2000, 1, 1)
+    end_date = end_date or datetime.today().date()
 
     def safe_excel_date(d):
         if isinstance(d, pd.Timestamp):

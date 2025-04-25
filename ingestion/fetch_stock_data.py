@@ -4,6 +4,18 @@ from db import get_db_connection, create_daily_stock_data_table, insert_stock_da
 
 
 def fetch_and_store_stock_data(ticker, start_date, end_date):
+    """Fetch historical stock data from Yahoo Finance and store in database.
+
+    Args:
+        ticker: Stock symbol to fetch (e.g., 'AAPL')
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+
+    Returns:
+        None: Data is stored directly in database. Returns None if:
+            - No data available for the ticker
+            - Market cap information is missing
+    """
     print(f"📡 Fetching data for {ticker}...")
 
     # Fetch stock data from Yahoo Finance
@@ -33,7 +45,16 @@ def fetch_and_store_stock_data(ticker, start_date, end_date):
     print(f"✅ Data for {ticker} saved to DuckDB.")
 
 
-def fetch_top_100_stocks(start_date, end_date):
+def fetch_active_stocks(start_date, end_date):
+    """Fetch and store historical data for all active stocks in database.
+
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+
+    Returns:
+        None: Data is stored directly in database for all active tickers
+    """
     # Load tickers from DuckDB
     con = get_db_connection()
     tickers_df = con.execute(
@@ -50,4 +71,4 @@ def fetch_top_100_stocks(start_date, end_date):
 if __name__ == "__main__":
     start_date = "2025-01-01"
     end_date = "2025-04-23"
-    fetch_top_100_stocks(start_date, end_date)
+    fetch_active_stocks(start_date, end_date)
